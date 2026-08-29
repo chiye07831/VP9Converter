@@ -1,6 +1,7 @@
-﻿#include "MainWindow.h"
+#include "MainWindow.h"
 #include "imgui.h"
 #include "util/FileDialog.h"
+#include "util/WinConv.h"
 #include "core/FFmpegBuilder.h"
 #include "core/ProgressParser.h"
 #include <ctime>
@@ -36,7 +37,7 @@ static void formatTime(double seconds, char* buf, int size)
 static bool fileExists(const std::string& path)
 {
 #ifdef _WIN32
-    DWORD attr = GetFileAttributesA(path.c_str());
+    DWORD attr = GetFileAttributesW(WinConv::utf8ToWide(path).c_str());
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 #else
     struct stat st;
@@ -47,7 +48,7 @@ static bool fileExists(const std::string& path)
 static bool dirExists(const std::string& path)
 {
 #ifdef _WIN32
-    DWORD attr = GetFileAttributesA(path.c_str());
+    DWORD attr = GetFileAttributesW(WinConv::utf8ToWide(path).c_str());
     return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
 #else
     struct stat st;
@@ -68,22 +69,31 @@ std::string MainWindow::checkTaskErrors(const Task* task)
     return {};
 }
 
-std::string MainWindow::buildCommandPreview(const Task& task)
+static std::string currentTimeString()
 {
-    std::string out;
-    if (task.videoEnabled && task.hasVideoSource)
-    {
-        out += "=== Video ===\n";
-        out += FFmpegBuilder::commandString(FFmpegBuilder::buildVideoArgs(task));
-        out += "\n";
-    }
-    if (task.audioEnabled && task.hasAudioSource)
-    {
-        out += "\n=== Audio ===\n";
-        out += FFmpegBuilder::commandString(FFmpegBuilder::buildAudioArgs(task));
-        out += "\n";
-    }
-    return out;
+    time_t t = time(nullptr);
+    struct tm tmv;
+#ifdef _WIN32
+    localtime_s(&tmv, &t);
+#else
+    localtime_r(&t, &tmv);
+#endif
+    char buf[16];
+    strftime(buf, sizeof(buf), "%H:%M:%S", &tmv);
+    return buf;
+}
+
+void MainWindow::logCommand(const std::string& phase, const Task& task,
+                            const std::vector<std::string>& args)
+{
+    if (args.empty())
+        return;
+    CommandLogEntry entry;
+    entry.time = currentTimeString();
+    entry.taskName = task.outputName;
+    entry.phase = phase;
+    entry.command = FFmpegBuilder::commandString(args);
+    m_commandLog.push_back(std::move(entry));
 }
 
 MainWindow::MainWindow(bool ffmpegAvailable, bool wannacriAvailable)
@@ -152,7 +162,6 @@ void MainWindow::render()
 
     ImGui::Begin("VP9Converter", nullptr, flags);
 
-    // FFmpeg popup (shown first if needed)
     if (!m_ffmpegAvailable && !m_ffmpegWarningShown)
     {
         ImGui::OpenPopup("FFmpeg Not Found");
@@ -167,7 +176,6 @@ void MainWindow::render()
         ImGui::EndPopup();
     }
 
-    // WannaCRI popup (shown after FFmpeg is confirmed available)
     if (m_ffmpegAvailable && !m_wannacriAvailable && !m_wannacriWarningShown)
     {
         ImGui::OpenPopup("WannaCRI Not Found");
@@ -298,6 +306,36 @@ void MainWindow::renderInputSection()
         ImGui::Text("Output Name");
         ImGui::SetNextItemWidth(-1.0f);
         ImGui::InputText("##outputName", m_outputNameBuf, sizeof(m_outputNameBuf));
+
+        ImGui::Separator();
+        ImGui::Text("Source Info");
+        Task* task = m_taskManager.current();
+        if (task && (task->hasVideoSource || task->hasAudioSource))
+        {
+            char dur[32];
+            formatTime(task->duration, dur, sizeof(dur));
+            std::string storage = (task->srcWidth > 0 && task->srcHeight > 0)
+                ? std::to_string(task->srcWidth) + " x " + std::to_string(task->srcHeight)
+                : "?";
+            std::string display = (task->dispWidth > 0 && task->dispHeight > 0)
+                ? std::to_string(task->dispWidth) + " x " + std::to_string(task->dispHeight)
+                : "?";
+            ImGui::Text("Storage : %s", storage.c_str());
+            ImGui::Text("Display : %s", display.c_str());
+            if (task->frameRate > 0.0)
+                ImGui::Text("Frame   : %.3f fps", task->frameRate);
+            else
+                ImGui::Text("Frame   : ?");
+            ImGui::Text("Video   : %s", task->hasVideoSource
+                        ? (task->videoCodec.empty() ? "?" : task->videoCodec.c_str()) : "-");
+            ImGui::Text("Audio   : %s", task->hasAudioSource
+                        ? (task->audioCodec.empty() ? "?" : task->audioCodec.c_str()) : "-");
+            ImGui::Text("Duration: %s", dur);
+        }
+        else
+        {
+            ImGui::TextDisabled("(no source detected)");
+        }
     }
 }
 
@@ -334,6 +372,11 @@ void MainWindow::renderVideoSection()
             ImGui::TextDisabled("(0-63)");
 
             ImGui::Checkbox("Keep Original Resolution", &task->keepResolution);
+            if (task->needsLetterbox)
+            {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.76f, 0.03f, 1.0f), "Non-16:9 - Auto Letterbox.");
+            }
             if (!task->keepResolution)
             {
                 ImGui::SetNextItemWidth(70);
@@ -421,6 +464,18 @@ void MainWindow::renderAudioSection()
             ImGui::SameLine();
             ImGui::Text("Sample Rate");
         }
+
+        ImGui::Separator();
+        if (ImGui::Button("Copy Original Audio Stream", ImVec2(0, 0)))
+        {
+            Task* t = m_taskManager.current();
+            if (t) startAudioCopy(t);
+        }
+        ImGui::SameLine();
+        if (m_audioCopyRunning)
+            ImGui::TextColored(ImVec4(0.50f, 0.72f, 0.93f, 1.0f), "Copying...");
+        else if (!m_audioCopyStatus.empty())
+            ImGui::TextWrapped("%s", m_audioCopyStatus.c_str());
     }
 }
 
@@ -450,14 +505,22 @@ void MainWindow::renderQualitySection()
             if (task->qualitySpeed > 0.0)
                 ImGui::Text("Speed: %.2fx", task->qualitySpeed);
         }
-        else if (task->status == Task::Finished && task->hasVideoSource)
+        else if (task->videoEncoded && task->hasVideoSource)
         {
-            if (ImGui::Button("Start", ImVec2(100, 0)))
+            if (task->needsLetterbox)
+            {
+                ImGui::BeginDisabled();
+                ImGui::Button("Start", ImVec2(100, 0));
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.20f, 1.0f), "Res Mismatch: Unusable");
+            }
+            else if (ImGui::Button("Start", ImVec2(100, 0)))
             {
                 startQualityCheck(task, m_taskManager.currentIndex());
             }
         }
-        else if (task->status != Task::Finished)
+        else if (!task->videoEncoded)
         {
             ImGui::TextDisabled("(available after encoding)");
         }
@@ -495,7 +558,6 @@ void MainWindow::renderQualitySection()
 
 void MainWindow::updateRunningProcesses()
 {
-    // Encoding runners
     for (auto it = m_runners.begin(); it != m_runners.end(); )
     {
         it->second->readStderr();
@@ -524,6 +586,9 @@ void MainWindow::updateRunningProcesses()
                         }
                     }
 
+                    if (task->phase == Task::VideoPhase)
+                        task->videoEncoded = true;
+
                     if (task->phase == Task::VideoPhase && task->audioEnabled && task->hasAudioSource)
                     {
                         auto audioArgs = FFmpegBuilder::buildAudioArgs(*task);
@@ -534,6 +599,7 @@ void MainWindow::updateRunningProcesses()
                             {
                                 task->phase = Task::AudioPhase;
                                 task->progress = 0.0f;
+                                logCommand("Audio", *task, audioArgs);
                                 it->second = std::move(runner);
                                 ++it;
                                 startedNext = true;
@@ -555,6 +621,7 @@ void MainWindow::updateRunningProcesses()
                                     {
                                         task->phase = Task::UsmPhase;
                                         task->progress = 0.0f;
+                                        logCommand("USM", *task, usmArgs);
                                         it->second = std::move(runner);
                                         ++it;
                                         startedNext = true;
@@ -621,7 +688,6 @@ void MainWindow::updateRunningProcesses()
         }
     }
 
-    // Quality runners
     for (auto it = m_qualityRunners.begin(); it != m_qualityRunners.end(); )
     {
         it->second->readStderr();
@@ -647,6 +713,7 @@ void MainWindow::updateRunningProcesses()
                         {
                             task->qualityPhase = Task::QSsim;
                             task->qualityProgress = 0.0f;
+                            logCommand("SSIM", *task, ssimArgs);
                             it->second = std::move(runner);
                             ++it;
                             continue;
@@ -667,6 +734,7 @@ void MainWindow::updateRunningProcesses()
                         {
                             task->qualityPhase = Task::QPsnr;
                             task->qualityProgress = 0.0f;
+                            logCommand("PSNR", *task, psnrArgs);
                             it->second = std::move(runner);
                             ++it;
                             continue;
@@ -699,23 +767,48 @@ void MainWindow::updateRunningProcesses()
             ++it;
         }
     }
+    if (m_audioCopyRunner)
+    {
+        m_audioCopyRunner->readStderr();
+        if (!m_audioCopyRunner->isRunning())
+        {
+            int code = m_audioCopyRunner->getExitCode();
+            if (code == 0)
+            {
+                m_audioCopyStatus = "OK: " + m_audioCopyOutput;
+            }
+            else
+            {
+                std::string err = m_audioCopyRunner->getFullStderr();
+                if (err.size() > 160)
+                    err.resize(160);
+                m_audioCopyStatus = "Failed (code " + std::to_string(code) + "): " + err;
+            }
+            m_audioCopyRunner.reset();
+            m_audioCopyRunning = false;
+        }
+    }
 }
 
 void MainWindow::startEncoding(Task* task, int index)
 {
     task->errorMessage.clear();
+    task->videoEncoded = false;
     task->duration = ProgressParser::getDuration(task->inputPath);
 
     std::vector<std::string> args;
+    std::string phaseLabel;
     if (task->videoEnabled && task->hasVideoSource)
     {
         args = FFmpegBuilder::buildVideoArgs(*task);
         task->phase = Task::VideoPhase;
+        phaseLabel = "Video";
     }
     else if (task->audioEnabled && task->hasAudioSource)
     {
         args = FFmpegBuilder::buildAudioArgs(*task);
         task->phase = Task::AudioPhase;
+        phaseLabel = "Audio";
     }
 
     if (args.empty()) return;
@@ -723,6 +816,7 @@ void MainWindow::startEncoding(Task* task, int index)
     auto runner = std::make_unique<ProcessRunner>();
     if (runner->start(args))
     {
+        logCommand(phaseLabel, *task, args);
         task->status = Task::Running;
         task->progress = 0.0f;
         task->elapsed = 0.0;
@@ -740,7 +834,7 @@ void MainWindow::startEncoding(Task* task, int index)
 
 void MainWindow::startQualityCheck(Task* task, int index)
 {
-    if (!task->hasVideoSource || !task->videoEnabled)
+    if (!task->hasVideoSource || !task->videoEncoded || task->needsLetterbox)
         return;
 
     auto vmafArgs = FFmpegBuilder::buildVmafArgs(*task);
@@ -749,6 +843,7 @@ void MainWindow::startQualityCheck(Task* task, int index)
     auto runner = std::make_unique<ProcessRunner>();
     if (runner->start(vmafArgs))
     {
+        logCommand("VMAF", *task, vmafArgs);
         task->qualityPhase = Task::QVmaf;
         task->qualityProgress = 0.0f;
         task->qualitySpeed = 0.0;
@@ -756,6 +851,33 @@ void MainWindow::startQualityCheck(Task* task, int index)
         task->ssimScore = 0.0;
         task->psnrScore = 0.0;
         m_qualityRunners[index] = std::move(runner);
+    }
+}
+
+void MainWindow::startAudioCopy(Task* task)
+{
+    if (!task || m_audioCopyRunning)
+        return;
+
+    auto args = FFmpegBuilder::buildCopyAudioArgs(*task);
+    if (args.empty())
+    {
+        m_audioCopyStatus = "Failed: no audio stream / invalid input";
+        return;
+    }
+
+    auto runner = std::make_unique<ProcessRunner>();
+    if (runner->start(args))
+    {
+        m_audioCopyOutput = FFmpegBuilder::copyAudioOutputPath(*task);
+        logCommand("AudioCopy", *task, args);
+        m_audioCopyRunner = std::move(runner);
+        m_audioCopyRunning = true;
+        m_audioCopyStatus = "Copying...";
+    }
+    else
+    {
+        m_audioCopyStatus = "Failed to start ffmpeg";
     }
 }
 
@@ -768,18 +890,8 @@ void MainWindow::renderRightPanel()
     ImGui::Text("Task Queue");
     ImGui::Separator();
 
-    // Compute bottom section height needed
-    float cmdH = 0.0f;
-    if (m_taskManager.current() && m_taskManager.current()->status != Task::Finished)
-    {
-        float wrapW = ImGui::GetContentRegionAvail().x;
-        std::string preview = buildCommandPreview(*m_taskManager.current());
-        ImVec2 textSz = ImGui::CalcTextSize(preview.c_str(), nullptr, false, wrapW);
-        cmdH = textSz.y + ImGui::GetStyle().FramePadding.y * 2 + 10;
-        if (cmdH < 40) cmdH = 40;
-    }
-    // Reserve for CmdPreview header + child + separator + Add Task + separator + buttons
-    float bottomReserve = (cmdH > 0 ? cmdH + 28 : 0) + 32 + (m_taskManager.count() > 0 ? 34 : 0);
+    const float cmdLogH = 160.0f;
+    float bottomReserve = (cmdLogH + 30) + 32 + (m_taskManager.count() > 0 ? 34 : 0);
     ImGui::BeginChild("TaskList", ImVec2(0, -bottomReserve), false, ImGuiWindowFlags_NoScrollbar);
 
     if (m_taskManager.count() == 0)
@@ -888,12 +1000,10 @@ void MainWindow::renderRightPanel()
             ImGui::Separator();
     }
 
-    // Right-click context menu
     if (ImGui::BeginPopupContextWindow("QueueContext"))
     {
         if (ImGui::MenuItem("Clear Completed"))
         {
-            // Save running entries keyed by Task pointer
             std::map<Task*, std::unique_ptr<ProcessRunner>> savedRunners;
             std::map<Task*, std::unique_ptr<ProcessRunner>> savedQuality;
             std::map<Task*, std::chrono::steady_clock::time_point> savedTimes;
@@ -917,7 +1027,6 @@ void MainWindow::renderRightPanel()
             }
             m_videoStartTimes.clear();
 
-            // Remove finished tasks backwards
             for (int i = m_taskManager.count() - 1; i >= 0; --i)
             {
                 Task* t = m_taskManager.get(i);
@@ -925,7 +1034,6 @@ void MainWindow::renderRightPanel()
                     m_taskManager.remove(i);
             }
 
-            // Rebuild maps with corrected indices
             for (int i = 0; i < m_taskManager.count(); ++i)
             {
                 Task* t = m_taskManager.get(i);
@@ -1001,22 +1109,67 @@ void MainWindow::renderRightPanel()
         syncFromTask();
     }
 
-    // Command Preview - auto-height with wrapping and copy support
-    if (m_taskManager.current() && m_taskManager.current()->status != Task::Finished)
+    ImGui::Separator();
     {
-        ImGui::Separator();
-        ImGui::TextUnformatted("Command Preview:");
-        ImGui::BeginChild("CmdPreview", ImVec2(0, cmdH), false, ImGuiWindowFlags_NoScrollbar);
-        std::string preview = buildCommandPreview(*m_taskManager.current());
-        float wrapW = ImGui::GetContentRegionAvail().x;
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrapW);
-        ImGui::TextUnformatted(preview.c_str());
-        ImGui::PopTextWrapPos();
-        if (ImGui::BeginPopupContextItem("CmdPopup"))
+        ImGui::TextUnformatted("Command Log");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%zu)", m_commandLog.size());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear##cmdlog"))
+            m_commandLog.clear();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Copy All"))
         {
-            if (ImGui::MenuItem("Copy"))
-                ImGui::SetClipboardText(preview.c_str());
-            ImGui::EndPopup();
+            std::string all;
+            for (const auto& e : m_commandLog)
+            {
+                all += "[" + e.time + "] [" + e.taskName + "] " + e.phase + "\n";
+                all += e.command + "\n";
+            }
+            ImGui::SetClipboardText(all.c_str());
+        }
+
+        ImGui::BeginChild("CmdLog", ImVec2(0, cmdLogH), true);
+        if (m_commandLog.empty())
+        {
+            ImGui::TextDisabled("No commands have been run yet.");
+        }
+        else
+        {
+            float childWrapW = ImGui::GetContentRegionAvail().x;
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + childWrapW);
+            for (size_t i = 0; i < m_commandLog.size(); ++i)
+            {
+                const CommandLogEntry& e = m_commandLog[i];
+
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.50f, 0.50f, 0.50f, 1.0f));
+                ImGui::TextUnformatted(("[" + e.time + "] [" + e.taskName + "] " + e.phase).c_str());
+                ImGui::PopStyleColor();
+
+                ImVec4 cmdColor(0.90f, 0.90f, 0.90f, 1.0f);
+                if (e.phase == "Video")
+                    cmdColor = ImVec4(0.50f, 0.72f, 0.93f, 1.0f);
+                else if (e.phase == "Audio")
+                    cmdColor = ImVec4(1.0f, 0.80f, 0.20f, 1.0f);
+                else if (e.phase == "USM")
+                    cmdColor = ImVec4(0.60f, 0.20f, 0.80f, 1.0f);
+                else
+                    cmdColor = ImVec4(0.30f, 0.69f, 0.31f, 1.0f);
+
+                ImGui::PushStyleColor(ImGuiCol_Text, cmdColor);
+                ImGui::TextUnformatted(e.command.c_str());
+                ImGui::PopStyleColor();
+
+                if (i != m_commandLog.size() - 1)
+                    ImGui::Separator();
+            }
+            ImGui::PopTextWrapPos();
+
+            if (m_commandLog.size() != m_commandLogRendered)
+            {
+                m_commandLogRendered = m_commandLog.size();
+                ImGui::SetScrollHereY(1.0f);
+            }
         }
         ImGui::EndChild();
     }

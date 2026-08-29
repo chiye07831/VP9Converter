@@ -1,14 +1,25 @@
 #include "FFmpegBuilder.h"
 #include "model/Defaults.h"
+#include "core/ProcessRunner.h"
 #include <cstdio>
+#include <cmath>
 #include <thread>
 #include <cstdlib>
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
+#include <sstream>
 
 namespace FFmpegBuilder {
+
+static bool parseRatio(const std::string& s, double& num, double& den)
+{
+    std::string::size_type sep = s.find(':');
+    if (sep == std::string::npos)
+        sep = s.find('/');
+    if (sep == std::string::npos)
+        return false;
+    num = std::atof(s.substr(0, sep).c_str());
+    den = std::atof(s.substr(sep + 1).c_str());
+    return num > 0.0 && den > 0.0;
+}
 
 static std::string makeOutputPath(const Task& task, const char* suffix)
 {
@@ -66,7 +77,32 @@ std::vector<std::string> buildVideoArgs(const Task& task)
             snprintf(buf, sizeof(buf), "val%+.0f", task.brightness - 100.0f);
             filters.push_back("lutyuv=y=" + std::string(buf));
         }
-        if (!task.keepResolution)
+
+        if (task.needsLetterbox && task.srcWidth > 0 && task.srcHeight > 0)
+        {
+            int outW, outH;
+            if (task.keepResolution)
+            {
+                outH = task.srcHeight;
+                outW = static_cast<int>(std::llround(task.srcHeight * 16.0 / 9.0));
+                if (outW % 2 != 0) ++outW;
+                if (outW < 2) outW = 2;
+            }
+            else
+            {
+                outW = task.width;
+                outH = task.height;
+            }
+            if (outW > 0 && outH > 0)
+            {
+                char buf[192];
+                snprintf(buf, sizeof(buf),
+                         "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                         outW, outH);
+                filters.push_back(buf);
+            }
+        }
+        else if (!task.keepResolution)
         {
             filters.push_back("scale=" + std::to_string(task.width) + ":" + std::to_string(task.height));
         }
@@ -202,9 +238,6 @@ std::vector<std::string> buildUsmArgs(const Task& task)
         return args;
 
     std::string ivfPath = makeOutputPath(task, ".ivf");
-    std::string escaped = ivfPath;
-    for (size_t p = escaped.find('\\'); p != std::string::npos; p = escaped.find('\\', p + 2))
-        escaped.replace(p, 1, "\\\\");
 
 #ifdef _WIN32
     args.push_back("pythonw");
@@ -214,7 +247,7 @@ std::vector<std::string> buildUsmArgs(const Task& task)
     args.push_back("-c");
     args.push_back(
         "import sys\n"
-        "sys.argv = ['wannacri', 'createusm', r'" + escaped + "']\n"
+        "sys.argv = ['wannacri', 'createusm'] + sys.argv[1:]\n"
         "import subprocess\n"
         "_orig_init = subprocess.Popen.__init__\n"
         "def _patched(self, *a, **kw):\n"
@@ -224,6 +257,43 @@ std::vector<std::string> buildUsmArgs(const Task& task)
         "from wannacri.wannacri import create_usm\n"
         "create_usm()\n"
     );
+    args.push_back(ivfPath);
+    args.push_back("-e");
+    args.push_back("utf-8");
+    return args;
+}
+
+std::string copyAudioOutputPath(const Task& task)
+{
+    std::string ext = "mka";
+    const std::string& c = task.audioCodec;
+    if (c == "aac")          ext = "m4a";
+    else if (c == "mp3")     ext = "mp3";
+    else if (c == "vorbis")  ext = "ogg";
+    else if (c == "opus")    ext = "opus";
+    else if (c == "flac")    ext = "flac";
+    else if (c == "ac3")     ext = "ac3";
+    else if (c == "eac3")    ext = "eac3";
+    else if (c == "pcm_s16le" || c == "pcm_s24le" || c == "pcm_s32le"
+          || c == "pcm_f32le" || c == "pcm_f64le") ext = "wav";
+    return makeOutputPath(task, ("_original." + ext).c_str());
+}
+
+std::vector<std::string> buildCopyAudioArgs(const Task& task)
+{
+    std::vector<std::string> args;
+    if (task.inputPath.empty() || task.outputFolder.empty() || task.outputName.empty()
+        || !task.hasAudioSource)
+        return args;
+
+    args.push_back("ffmpeg");
+    args.push_back("-y");
+    args.push_back("-i");
+    args.push_back(task.inputPath);
+    args.push_back("-vn");
+    args.push_back("-c:a");
+    args.push_back("copy");
+    args.push_back(copyAudioOutputPath(task));
     return args;
 }
 
@@ -247,62 +317,121 @@ std::string commandString(const std::vector<std::string>& args)
     return result;
 }
 
-#ifdef _WIN32
-
-void detectMediaInfo(Task& task)
+static void parseMediaInfo(Task& task, const std::string& output)
 {
-    std::string cmd = "ffprobe -v error -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 \"";
-    cmd += task.inputPath + "\"";
+    task.hasVideoSource = false;
+    task.hasAudioSource = false;
+    task.srcWidth = 0;
+    task.srcHeight = 0;
+    task.dispWidth = 0;
+    task.dispHeight = 0;
+    task.frameRate = 0.0;
+    task.videoCodec.clear();
+    task.audioCodec.clear();
+    task.needsLetterbox = false;
 
-    SECURITY_ATTRIBUTES sa = {};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
+    bool inStream = false;
+    std::string type, codecName, sarStr, rateStr;
+    int w = 0, h = 0;
 
-    HANDLE hRead, hWrite;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0))
-        return;
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessA(nullptr, &cmd[0], nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
+    std::istringstream iss(output);
+    std::string line;
+    while (std::getline(iss, line))
     {
-        CloseHandle(hRead);
-        CloseHandle(hWrite);
-        return;
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (line == "[STREAM]")
+        {
+            inStream = true;
+            type.clear(); codecName.clear(); sarStr.clear(); rateStr.clear();
+            w = h = 0;
+            continue;
+        }
+        if (line == "[/STREAM]")
+        {
+            inStream = false;
+            if (type == "video")
+            {
+                task.hasVideoSource = true;
+                task.videoCodec = codecName;
+                task.srcWidth = w;
+                task.srcHeight = h;
+
+                double sarNum = 1.0, sarDen = 1.0;
+                parseRatio(sarStr, sarNum, sarDen);
+                task.dispWidth = static_cast<int>(std::llround(w * sarNum / sarDen));
+                task.dispHeight = h;
+                if (w > 0 && h > 0)
+                {
+                    double dar = (static_cast<double>(w) * sarNum) / (static_cast<double>(h) * sarDen);
+                    task.needsLetterbox = (std::fabs(dar - 16.0 / 9.0) > 0.02);
+                }
+
+                double num = 0.0, den = 0.0;
+                if (parseRatio(rateStr, num, den))
+                    task.frameRate = num / den;
+            }
+            else if (type == "audio")
+            {
+                task.hasAudioSource = true;
+                task.audioCodec = codecName;
+            }
+            continue;
+        }
+        if (line == "[FORMAT]" || line == "[/FORMAT]")
+            continue;
+
+        std::string::size_type eq = line.find('=');
+        if (eq == std::string::npos)
+            continue;
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+
+        if (inStream)
+        {
+            if (key == "codec_type")         type = val;
+            else if (key == "codec_name")    codecName = val;
+            else if (key == "width")         w = std::atoi(val.c_str());
+            else if (key == "height")        h = std::atoi(val.c_str());
+            else if (key == "sample_aspect_ratio") sarStr = val;
+            else if (key == "r_frame_rate")  rateStr = val;
+        }
+        else
+        {
+            if (key == "duration")
+                task.duration = std::atof(val.c_str());
+        }
     }
-
-    CloseHandle(hWrite);
-    CloseHandle(pi.hThread);
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-
-    char buf[256] = {};
-    DWORD totalRead = 0;
-    DWORD bytesRead;
-    while (ReadFile(hRead, buf + totalRead, sizeof(buf) - totalRead - 1, &bytesRead, nullptr) && bytesRead > 0)
-        totalRead += bytesRead;
-    buf[totalRead] = '\0';
-    CloseHandle(hRead);
-
-    std::string output(buf);
-    task.hasVideoSource = (output.find("video") != std::string::npos);
-    task.hasAudioSource = (output.find("audio") != std::string::npos);
 }
 
-#else
-
 void detectMediaInfo(Task& task)
 {
-    std::string cmd = "ffprobe -v error -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 \"";
-    cmd += task.inputPath + "\" 2>/dev/null";
+    std::vector<std::string> args;
+    args.push_back("ffprobe");
+    args.push_back("-v");
+    args.push_back("error");
+    args.push_back("-show_entries");
+    args.push_back("stream=codec_type,codec_name,width,height,sample_aspect_ratio,r_frame_rate:format=duration");
+    args.push_back("-of");
+    args.push_back("default");
+    args.push_back(task.inputPath);
+
+#ifdef _WIN32
+    std::string output;
+    if (!ProcessRunner::runAndWait(args, output))
+        return;
+    parseMediaInfo(task, output);
+#else
+    std::string cmd;
+    for (const auto& a : args)
+    {
+        if (!cmd.empty()) cmd += ' ';
+        if (a.find(' ') != std::string::npos)
+            cmd += '"' + a + '"';
+        else
+            cmd += a;
+    }
+    cmd += " 2>/dev/null";
 
     FILE* pipe = popen(cmd.c_str(), "r");
     if (!pipe) return;
@@ -312,11 +441,8 @@ void detectMediaInfo(Task& task)
     while (fgets(buf, sizeof(buf), pipe))
         output += buf;
     pclose(pipe);
-
-    task.hasVideoSource = (output.find("video") != std::string::npos);
-    task.hasAudioSource = (output.find("audio") != std::string::npos);
-}
-
+    parseMediaInfo(task, output);
 #endif
+}
 
 }

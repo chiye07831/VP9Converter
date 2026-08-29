@@ -1,5 +1,7 @@
 #include "FFmpegDetector.h"
+#include "core/ProcessRunner.h"
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -13,58 +15,22 @@ namespace FFmpegDetector {
 
 bool checkFFmpeg()
 {
-    char buf[MAX_PATH];
-    return SearchPathA(nullptr, "ffmpeg", ".exe", MAX_PATH, buf, nullptr) > 0;
+    WCHAR buf[MAX_PATH];
+    return SearchPathW(nullptr, L"ffmpeg", L".exe", MAX_PATH, buf, nullptr) > 0;
 }
 
 bool checkFFprobe()
 {
-    char buf[MAX_PATH];
-    return SearchPathA(nullptr, "ffprobe", ".exe", MAX_PATH, buf, nullptr) > 0;
+    WCHAR buf[MAX_PATH];
+    return SearchPathW(nullptr, L"ffprobe", L".exe", MAX_PATH, buf, nullptr) > 0;
 }
 
 bool checkWannaCRI()
 {
-    SECURITY_ATTRIBUTES sa = {};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-
-    HANDLE hRead, hWrite;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0))
+    std::vector<std::string> args = { "pip", "show", "WannaCRI" };
+    std::string output;
+    if (!ProcessRunner::runAndWait(args, output))
         return false;
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    STARTUPINFOA si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-
-    std::string cmd = "pip show WannaCRI";
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessA(nullptr, &cmd[0], nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-    {
-        CloseHandle(hRead);
-        CloseHandle(hWrite);
-        return false;
-    }
-
-    CloseHandle(hWrite);
-    CloseHandle(pi.hThread);
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-
-    char buf[512] = {};
-    DWORD totalRead = 0;
-    DWORD bytesRead;
-    while (ReadFile(hRead, buf + totalRead, sizeof(buf) - totalRead - 1, &bytesRead, nullptr) && bytesRead > 0)
-        totalRead += bytesRead;
-    buf[totalRead] = '\0';
-    CloseHandle(hRead);
-
-    std::string output(buf);
     return output.find("Name: WannaCRI") != std::string::npos;
 }
 

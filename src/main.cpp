@@ -22,6 +22,65 @@
 
 static MainWindow* g_mainWindow = nullptr;
 
+static void loadFallbackFonts()
+{
+    ImGuiIO& io = ImGui::GetIO();
+
+    static const ImWchar unicodeRanges[] = {
+        0x0020, 0x00FF,
+        0x0100, 0x017F,
+        0x0180, 0x024F,
+        0x0370, 0x03FF,
+        0x1F00, 0x1FFF,
+        0x0400, 0x052F,
+        0x0600, 0x06FF,
+        0x0750, 0x077F,
+        0x2000, 0x206F,
+        0x2600, 0x27BF,
+        0x3000, 0x30FF,
+        0x31F0, 0x31FF,
+        0x4E00, 0x9FFF,
+        0xAC00, 0xD7AF,
+        0xFB50, 0xFDFF,
+        0xFE30, 0xFE4F,
+        0xFE70, 0xFEFF,
+        0xFF00, 0xFFEF,
+        0,
+    };
+
+    ImFontConfig cfg;
+    cfg.MergeMode = true;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 1;
+
+    io.Fonts->AddFontDefault();
+
+    static const char* cjkCandidates[] = {
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\msyhbd.ttc",
+        "C:\\Windows\\Fonts\\simhei.ttf",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\meiryo.ttc",
+        "C:\\Windows\\Fonts\\malgun.ttf",
+    };
+    for (const char* path : cjkCandidates)
+    {
+        if (io.Fonts->AddFontFromFileTTF(path, 13.0f, &cfg, unicodeRanges))
+            break;
+    }
+
+    static const char* hangulCandidates[] = {
+        "C:\\Windows\\Fonts\\malgun.ttf",
+        "C:\\Windows\\Fonts\\NanumGothic.ttf",
+    };
+    for (const char* path : hangulCandidates)
+    {
+        if (io.Fonts->AddFontFromFileTTF(path, 13.0f, &cfg, unicodeRanges))
+            break;
+    }
+}
+
+
 static void dropCallback(GLFWwindow* window, int count, const char** paths)
 {
     (void)window;
@@ -63,7 +122,7 @@ int main()
     {
         HWND hwnd = glfwGetWin32Window(window);
         int dark = 1;
-        DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &dark, sizeof(dark));
+        DwmSetWindowAttribute(hwnd, 20 , &dark, sizeof(dark));
     }
 #endif
     glfwShowWindow(window);
@@ -72,6 +131,7 @@ int main()
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
+    loadFallbackFonts();
 
     ImGui::StyleColorsDark();
     {

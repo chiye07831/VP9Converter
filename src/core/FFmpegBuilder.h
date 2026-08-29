@@ -12,6 +12,8 @@ std::vector<std::string> buildVmafArgs(const Task& task);
 std::vector<std::string> buildSsimArgs(const Task& task);
 std::vector<std::string> buildPsnrArgs(const Task& task);
 std::vector<std::string> buildUsmArgs(const Task& task);
+std::vector<std::string> buildCopyAudioArgs(const Task& task);
+std::string copyAudioOutputPath(const Task& task);
 std::string commandString(const std::vector<std::string>& args);
 void detectMediaInfo(Task& task);
 int getCpuThreads();

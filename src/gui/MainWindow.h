@@ -15,6 +15,14 @@ public:
     void render();
     void addDroppedFiles(const std::vector<std::string>& paths);
 
+    struct CommandLogEntry
+    {
+        std::string time;
+        std::string taskName;
+        std::string phase;
+        std::string command;
+    };
+
 private:
     void renderLeftPanel();
     void renderRightPanel();
@@ -28,8 +36,10 @@ private:
     void updateRunningProcesses();
     void startEncoding(Task* task, int index);
     void startQualityCheck(Task* task, int index);
+    void startAudioCopy(Task* task);
     static std::string checkTaskErrors(const Task* task);
-    static std::string buildCommandPreview(const Task& task);
+    void logCommand(const std::string& phase, const Task& task,
+                    const std::vector<std::string>& args);
 
     bool m_ffmpegAvailable;
     bool m_wannacriAvailable;
@@ -42,6 +52,14 @@ private:
     std::map<int, std::unique_ptr<ProcessRunner>> m_runners;
     std::map<int, std::unique_ptr<ProcessRunner>> m_qualityRunners;
     std::map<int, std::chrono::steady_clock::time_point> m_videoStartTimes;
+
+    std::vector<CommandLogEntry> m_commandLog;
+    size_t m_commandLogRendered = 0;
+
+    std::unique_ptr<ProcessRunner> m_audioCopyRunner;
+    std::string m_audioCopyOutput;
+    std::string m_audioCopyStatus;
+    bool m_audioCopyRunning = false;
 
     char m_inputPathBuf[512];
     char m_outputFolderBuf[512];

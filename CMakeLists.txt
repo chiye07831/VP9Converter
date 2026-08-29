@@ -52,6 +52,7 @@ add_executable(VP9Converter
     src/gui/MainWindow.cpp
     src/model/TaskManager.cpp
     src/util/FileDialog.cpp
+    src/util/WinConv.cpp
     src/core/FFmpegDetector.cpp
     src/core/FFmpegBuilder.cpp
     src/core/ProcessRunner.cpp

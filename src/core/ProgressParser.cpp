@@ -1,13 +1,8 @@
 #include "ProgressParser.h"
+#include "core/ProcessRunner.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <cstdio>
-#endif
 
 namespace ProgressParser {
 
@@ -50,51 +45,21 @@ void parseOutput(const std::string& stderrOutput, ProgressInfo& info)
 
 double getDuration(const std::string& inputPath)
 {
-    std::string cmd = "ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 \"";
-    cmd += inputPath;
-    cmd += "\"";
+    std::vector<std::string> args;
+    args.push_back("ffprobe");
+    args.push_back("-v");
+    args.push_back("error");
+    args.push_back("-show_entries");
+    args.push_back("format=duration");
+    args.push_back("-of");
+    args.push_back("default=noprint_wrappers=1:nokey=1");
+    args.push_back(inputPath);
 
-    SECURITY_ATTRIBUTES sa = {};
-    sa.nLength = sizeof(sa);
-    sa.bInheritHandle = TRUE;
-
-    HANDLE hRead, hWrite;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0))
+    std::string output;
+    if (!ProcessRunner::runAndWait(args, output))
         return 0.0;
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-    STARTUPINFOA si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdOutput = hWrite;
-    si.hStdError = hWrite;
-
-    PROCESS_INFORMATION pi = {};
-    if (!CreateProcessA(nullptr, &cmd[0], nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-    {
-        CloseHandle(hRead);
-        CloseHandle(hWrite);
-        return 0.0;
-    }
-
-    CloseHandle(hWrite);
-    CloseHandle(pi.hThread);
-
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    CloseHandle(pi.hProcess);
-
-    char buf[128] = {};
-    DWORD totalRead = 0;
-    DWORD bytesRead;
-    while (ReadFile(hRead, buf + totalRead, sizeof(buf) - totalRead - 1, &bytesRead, nullptr) && bytesRead > 0)
-        totalRead += bytesRead;
-    buf[totalRead] = '\0';
-    CloseHandle(hRead);
-
-    double duration = 0.0;
-    sscanf(buf, "%lf", &duration);
-    return duration;
+    return std::atof(output.c_str());
 }
 
 #else

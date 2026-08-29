@@ -19,6 +19,8 @@ public:
     std::string readStderr();
     std::string getFullStderr() const;
 
+    static bool runAndWait(const std::vector<std::string>& args, std::string& output);
+
 private:
 #ifdef _WIN32
     void* m_processHandle;

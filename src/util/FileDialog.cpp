@@ -1,4 +1,5 @@
 #include "FileDialog.h"
+#include "WinConv.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -14,53 +15,53 @@ namespace FileDialog {
 
 #ifdef _WIN32
 
-static const char* MEDIA_FILTER =
-    "Media Files\0*.mp4;*.mkv;*.avi;*.mov;*.flv;*.webm;*.avc;*.wmv;*.m4v;"
-    "*.mp3;*.wav;*.flac;*.ogg;*.wma;*.aac;*.m4a\0"
-    "All Files\0*.*\0";
+static const WCHAR* MEDIA_FILTER_W =
+    L"Media Files\0*.mp4;*.mkv;*.avi;*.mov;*.flv;*.webm;*.avc;*.wmv;*.m4v;"
+    L"*.mp3;*.wav;*.flac;*.ogg;*.wma;*.aac;*.m4a\0"
+    L"All Files\0*.*\0";
 
 std::string openFile()
 {
-    OPENFILENAMEA ofn = {};
-    char buf[1024] = {};
+    OPENFILENAMEW ofn = {};
+    WCHAR buf[1024] = {};
     ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFilter = MEDIA_FILTER;
+    ofn.lpstrFilter = MEDIA_FILTER_W;
     ofn.lpstrFile = buf;
-    ofn.nMaxFile = sizeof(buf);
+    ofn.nMaxFile = 1024;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER;
-    if (GetOpenFileNameA(&ofn))
-        return buf;
+    if (GetOpenFileNameW(&ofn))
+        return WinConv::wideToUtf8(buf);
     return {};
 }
 
 std::vector<std::string> openFiles()
 {
-    OPENFILENAMEA ofn = {};
-    char buf[8192] = {};
+    OPENFILENAMEW ofn = {};
+    WCHAR buf[8192] = {};
     ofn.lStructSize = sizeof(ofn);
-    ofn.lpstrFilter = MEDIA_FILTER;
+    ofn.lpstrFilter = MEDIA_FILTER_W;
     ofn.lpstrFile = buf;
-    ofn.nMaxFile = sizeof(buf);
+    ofn.nMaxFile = 8192;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_EXPLORER | OFN_ALLOWMULTISELECT;
-    if (!GetOpenFileNameA(&ofn))
+    if (!GetOpenFileNameW(&ofn))
         return {};
 
     std::vector<std::string> files;
-    if (buf[ofn.nFileOffset] == '\0')
+    if (buf[ofn.nFileOffset] == L'\0')
     {
-        files.push_back(buf);
+        files.push_back(WinConv::wideToUtf8(buf));
         return files;
     }
 
-    std::string dir = std::string(buf, ofn.nFileOffset - 1);
-    if (!dir.empty() && dir.back() != '\\' && dir.back() != '/')
-        dir += '\\';
+    std::wstring dir(buf, ofn.nFileOffset - 1);
+    if (!dir.empty() && dir.back() != L'\\' && dir.back() != L'/')
+        dir += L'\\';
 
-    const char* p = buf + ofn.nFileOffset;
+    const WCHAR* p = buf + ofn.nFileOffset;
     while (*p)
     {
-        std::string name(p);
-        files.push_back(dir + name);
+        std::wstring name(p);
+        files.push_back(WinConv::wideToUtf8(dir + name));
         p += name.size() + 1;
     }
     return files;
@@ -90,14 +91,7 @@ std::string openFolder()
                 PWSTR path = nullptr;
                 if (SUCCEEDED(psi->GetDisplayName(SIGDN_FILESYSPATH, &path)))
                 {
-                    int len = WideCharToMultiByte(CP_UTF8, 0, path, -1, nullptr, 0, nullptr, nullptr);
-                    if (len > 0)
-                    {
-                        char* buf = new char[len];
-                        WideCharToMultiByte(CP_UTF8, 0, path, -1, buf, len, nullptr, nullptr);
-                        result = buf;
-                        delete[] buf;
-                    }
+                    result = WinConv::wideToUtf8(path);
                     CoTaskMemFree(path);
                 }
                 psi->Release();

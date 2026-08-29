@@ -1,4 +1,5 @@
 #include "ProcessRunner.h"
+#include "util/WinConv.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -41,15 +42,10 @@ ProcessRunner::~ProcessRunner()
 
 bool ProcessRunner::start(const std::vector<std::string>& args)
 {
-    std::string cmdLine;
-    for (size_t i = 0; i < args.size(); ++i)
-    {
-        if (i > 0) cmdLine += ' ';
-        if (args[i].find(' ') != std::string::npos)
-            cmdLine += '"' + args[i] + '"';
-        else
-            cmdLine += args[i];
-    }
+    if (args.empty())
+        return false;
+
+    std::wstring cmdLine = WinConv::buildCommandLine(args);
 
     SECURITY_ATTRIBUTES sa = {};
     sa.nLength = sizeof(sa);
@@ -60,7 +56,7 @@ bool ProcessRunner::start(const std::vector<std::string>& args)
         return false;
     SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
 
-    STARTUPINFOA si = {};
+    STARTUPINFOW si = {};
     si.cb = sizeof(si);
     si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
     si.wShowWindow = SW_HIDE;
@@ -70,7 +66,7 @@ bool ProcessRunner::start(const std::vector<std::string>& args)
 
     PROCESS_INFORMATION pi = {};
 
-    if (!CreateProcessA(nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
+    if (!CreateProcessW(nullptr, &cmdLine[0], nullptr, nullptr, TRUE,
                         CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
     {
         CloseHandle(hRead);
@@ -154,6 +150,26 @@ std::string ProcessRunner::readStderr()
 std::string ProcessRunner::getFullStderr() const
 {
     return m_stderrAccum;
+}
+
+bool ProcessRunner::runAndWait(const std::vector<std::string>& args, std::string& output)
+{
+    ProcessRunner runner;
+    if (!runner.start(args))
+        return false;
+
+    while (runner.isRunning())
+    {
+        runner.readStderr();
+#ifdef _WIN32
+        Sleep(1);
+#else
+        usleep(1000);
+#endif
+    }
+    runner.readStderr();
+    output = runner.getFullStderr();
+    return true;
 }
 
 #else

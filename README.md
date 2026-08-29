@@ -1,6 +1,6 @@
 # VP9Converter
 
-A lightweight desktop GUI for converting video into Project DIVA-compatible VP9 (.ivf) and OGG audio via FFmpeg,and through WannaCRI create ivf as usm file.
+A lightweight desktop GUI for converting video into Project DIVA-compatible VP9 (.ivf) and OGG audio via FFmpeg, and through WannaCRI create ivf as usm file. IVF is used because it is the only container WannaCRI accepts for USM packing. Non-16:9 anamorphic sources are de-anamorphed and padded to 16:9 square pixels by the encoder filter chain, so IVF's inability to store SAR is irrelevant.
 
 ## Requirements
 
@@ -19,11 +19,3 @@ A lightweight desktop GUI for converting video into Project DIVA-compatible VP9 
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ```
-
-## Usage
-
-1. Launch VP9Converter
-2. Add a video file (+ Add Task)
-3. Adjust encoding parameters (CRF, resolution, etc.)
-4. Click Start to begin conversion
-5. Monitor progress in the task queue

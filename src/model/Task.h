@@ -12,6 +12,17 @@ struct Task
     bool videoEnabled = true;
     bool hasVideoSource = true;
     bool constantQuality = true;
+
+    int srcWidth = 0;
+    int srcHeight = 0;
+    int dispWidth = 0;
+    int dispHeight = 0;
+    double frameRate = 0.0;
+    std::string videoCodec;
+    std::string audioCodec;
+    bool needsLetterbox = false;
+    bool videoEncoded = false;
+
     int crf = DEFAULT_CRF;
     int targetBitrate = 0;
     int minBitrate = 0;

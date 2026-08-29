@@ -3,7 +3,7 @@
 Task* TaskManager::add()
 {
     auto task = std::make_unique<Task>();
-    task->outputName = "task" + std::to_string(m_tasks.size() + 1) + ".ivf";
+    task->outputName = "task" + std::to_string(m_tasks.size() + 1) + ".webm";
     Task* ptr = task.get();
     m_tasks.push_back(std::move(task));
     if (m_currentIndex < 0)
