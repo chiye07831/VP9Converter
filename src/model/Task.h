@@ -20,7 +20,10 @@ struct Task
     double frameRate = 0.0;
     std::string videoCodec;
     std::string audioCodec;
-    bool needsLetterbox = false;
+    int64_t videoBitrate = 0;
+    int64_t audioBitrate = 0;
+    bool needsPadding = false;
+    bool paddingEnabled = true;
     bool videoEncoded = false;
 
     int crf = DEFAULT_CRF;

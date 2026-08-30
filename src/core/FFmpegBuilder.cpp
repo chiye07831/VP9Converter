@@ -1,6 +1,7 @@
 #include "FFmpegBuilder.h"
 #include "model/Defaults.h"
 #include "core/ProcessRunner.h"
+#include "util/FileDialog.h"
 #include <cstdio>
 #include <cmath>
 #include <thread>
@@ -16,9 +17,13 @@ static bool parseRatio(const std::string& s, double& num, double& den)
         sep = s.find('/');
     if (sep == std::string::npos)
         return false;
-    num = std::atof(s.substr(0, sep).c_str());
-    den = std::atof(s.substr(sep + 1).c_str());
-    return num > 0.0 && den > 0.0;
+    double n = std::atof(s.substr(0, sep).c_str());
+    double d = std::atof(s.substr(sep + 1).c_str());
+    if (n <= 0.0 || d <= 0.0)
+        return false;
+    num = n;
+    den = d;
+    return true;
 }
 
 static std::string makeOutputPath(const Task& task, const char* suffix)
@@ -34,6 +39,37 @@ int getCpuThreads()
 {
     int n = static_cast<int>(std::thread::hardware_concurrency());
     return (n > 0) ? n : 4;
+}
+
+bool outputSizeMatchesSource(const Task& task)
+{
+    if (task.srcWidth <= 0 || task.srcHeight <= 0)
+        return false;
+    int outW, outH;
+    if (task.keepResolution)
+    {
+        if (task.needsPadding && task.paddingEnabled)
+        {
+            outH = task.srcHeight;
+            outW = static_cast<int>(std::llround(task.srcHeight * 16.0 / 9.0));
+        }
+        else
+        {
+            outW = task.srcWidth;
+            outH = task.srcHeight;
+        }
+    }
+    else
+    {
+        outW = task.width;
+        outH = task.height;
+    }
+    if (task.needsPadding && task.paddingEnabled)
+    {
+        if (outW % 2 != 0) ++outW;
+        if (outH % 2 != 0) ++outH;
+    }
+    return outW == task.srcWidth && outH == task.srcHeight;
 }
 
 std::vector<std::string> buildVideoArgs(const Task& task)
@@ -78,27 +114,29 @@ std::vector<std::string> buildVideoArgs(const Task& task)
             filters.push_back("lutyuv=y=" + std::string(buf));
         }
 
-        if (task.needsLetterbox && task.srcWidth > 0 && task.srcHeight > 0)
+        if (task.needsPadding && task.paddingEnabled && task.srcWidth > 0 && task.srcHeight > 0)
         {
             int outW, outH;
             if (task.keepResolution)
             {
                 outH = task.srcHeight;
                 outW = static_cast<int>(std::llround(task.srcHeight * 16.0 / 9.0));
-                if (outW % 2 != 0) ++outW;
-                if (outW < 2) outW = 2;
             }
             else
             {
                 outW = task.width;
                 outH = task.height;
             }
+            if (outW % 2 != 0) ++outW;
+            if (outH % 2 != 0) ++outH;
+            if (outW < 2) outW = 2;
+            if (outH < 2) outH = 2;
             if (outW > 0 && outH > 0)
             {
-                char buf[192];
+                char buf[256];
                 snprintf(buf, sizeof(buf),
-                         "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1",
-                         outW, outH);
+                         "scale=trunc(iw*sar/2)*2:trunc(ih/2)*2,setsar=1,scale=%d:%d:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=%d:%d:(ow-iw)/2:(oh-ih)/2,setsar=1",
+                         outW, outH, outW, outH);
                 filters.push_back(buf);
             }
         }
@@ -276,7 +314,12 @@ std::string copyAudioOutputPath(const Task& task)
     else if (c == "eac3")    ext = "eac3";
     else if (c == "pcm_s16le" || c == "pcm_s24le" || c == "pcm_s32le"
           || c == "pcm_f32le" || c == "pcm_f64le") ext = "wav";
-    return makeOutputPath(task, ("_original." + ext).c_str());
+    std::string stem = FileDialog::getStem(task.inputPath);
+    std::string path = task.outputFolder;
+    if (!path.empty() && path.back() != '/' && path.back() != '\\')
+        path += '/';
+    path += stem + "." + ext;
+    return path;
 }
 
 std::vector<std::string> buildCopyAudioArgs(const Task& task)
@@ -328,11 +371,14 @@ static void parseMediaInfo(Task& task, const std::string& output)
     task.frameRate = 0.0;
     task.videoCodec.clear();
     task.audioCodec.clear();
-    task.needsLetterbox = false;
+    task.needsPadding = false;
+    task.videoBitrate = 0;
+    task.audioBitrate = 0;
 
     bool inStream = false;
     std::string type, codecName, sarStr, rateStr;
     int w = 0, h = 0;
+    int64_t bitrate = 0;
 
     std::istringstream iss(output);
     std::string line;
@@ -345,6 +391,7 @@ static void parseMediaInfo(Task& task, const std::string& output)
             inStream = true;
             type.clear(); codecName.clear(); sarStr.clear(); rateStr.clear();
             w = h = 0;
+            bitrate = 0;
             continue;
         }
         if (line == "[/STREAM]")
@@ -364,17 +411,19 @@ static void parseMediaInfo(Task& task, const std::string& output)
                 if (w > 0 && h > 0)
                 {
                     double dar = (static_cast<double>(w) * sarNum) / (static_cast<double>(h) * sarDen);
-                    task.needsLetterbox = (std::fabs(dar - 16.0 / 9.0) > 0.02);
+                    task.needsPadding = (std::fabs(dar - 16.0 / 9.0) > 0.02);
                 }
 
                 double num = 0.0, den = 0.0;
                 if (parseRatio(rateStr, num, den))
                     task.frameRate = num / den;
+                task.videoBitrate = bitrate;
             }
             else if (type == "audio")
             {
                 task.hasAudioSource = true;
                 task.audioCodec = codecName;
+                task.audioBitrate = bitrate;
             }
             continue;
         }
@@ -395,6 +444,7 @@ static void parseMediaInfo(Task& task, const std::string& output)
             else if (key == "height")        h = std::atoi(val.c_str());
             else if (key == "sample_aspect_ratio") sarStr = val;
             else if (key == "r_frame_rate")  rateStr = val;
+            else if (key == "bit_rate")      bitrate = std::atoll(val.c_str());
         }
         else
         {
@@ -411,7 +461,7 @@ void detectMediaInfo(Task& task)
     args.push_back("-v");
     args.push_back("error");
     args.push_back("-show_entries");
-    args.push_back("stream=codec_type,codec_name,width,height,sample_aspect_ratio,r_frame_rate:format=duration");
+    args.push_back("stream=codec_type,codec_name,width,height,sample_aspect_ratio,r_frame_rate,bit_rate:format=duration");
     args.push_back("-of");
     args.push_back("default");
     args.push_back(task.inputPath);

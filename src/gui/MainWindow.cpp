@@ -34,6 +34,24 @@ static void formatTime(double seconds, char* buf, int size)
     snprintf(buf, size, "%02d:%02d:%02d", h, m, s);
 }
 
+static std::string formatBitrate(int64_t bps)
+{
+    if (bps <= 0) return "?";
+    if (bps >= 1000000)
+    {
+        char b[32];
+        snprintf(b, sizeof(b), "%.2f Mbps", bps / 1000000.0);
+        return b;
+    }
+    if (bps >= 1000)
+    {
+        char b[32];
+        snprintf(b, sizeof(b), "%.0f kbps", bps / 1000.0);
+        return b;
+    }
+    return std::to_string(bps) + " bps";
+}
+
 static bool fileExists(const std::string& path)
 {
 #ifdef _WIN32
@@ -326,10 +344,16 @@ void MainWindow::renderInputSection()
                 ImGui::Text("Frame   : %.3f fps", task->frameRate);
             else
                 ImGui::Text("Frame   : ?");
-            ImGui::Text("Video   : %s", task->hasVideoSource
-                        ? (task->videoCodec.empty() ? "?" : task->videoCodec.c_str()) : "-");
-            ImGui::Text("Audio   : %s", task->hasAudioSource
-                        ? (task->audioCodec.empty() ? "?" : task->audioCodec.c_str()) : "-");
+            std::string vInfo = task->hasVideoSource
+                ? (task->videoCodec.empty() ? "?" : task->videoCodec) : "-";
+            if (task->hasVideoSource && task->videoBitrate > 0)
+                vInfo += "  (" + formatBitrate(task->videoBitrate) + ")";
+            ImGui::Text("Video   : %s", vInfo.c_str());
+            std::string aInfo = task->hasAudioSource
+                ? (task->audioCodec.empty() ? "?" : task->audioCodec) : "-";
+            if (task->hasAudioSource && task->audioBitrate > 0)
+                aInfo += "  (" + formatBitrate(task->audioBitrate) + ")";
+            ImGui::Text("Audio   : %s", aInfo.c_str());
             ImGui::Text("Duration: %s", dur);
         }
         else
@@ -372,11 +396,8 @@ void MainWindow::renderVideoSection()
             ImGui::TextDisabled("(0-63)");
 
             ImGui::Checkbox("Keep Original Resolution", &task->keepResolution);
-            if (task->needsLetterbox)
-            {
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.0f, 0.76f, 0.03f, 1.0f), "Non-16:9 - Auto Letterbox.");
-            }
+            if (task->needsPadding)
+                ImGui::Checkbox("add black padding", &task->paddingEnabled);
             if (!task->keepResolution)
             {
                 ImGui::SetNextItemWidth(70);
@@ -507,7 +528,7 @@ void MainWindow::renderQualitySection()
         }
         else if (task->videoEncoded && task->hasVideoSource)
         {
-            if (task->needsLetterbox)
+            if (!FFmpegBuilder::outputSizeMatchesSource(*task))
             {
                 ImGui::BeginDisabled();
                 ImGui::Button("Start", ImVec2(100, 0));
@@ -834,7 +855,7 @@ void MainWindow::startEncoding(Task* task, int index)
 
 void MainWindow::startQualityCheck(Task* task, int index)
 {
-    if (!task->hasVideoSource || !task->videoEncoded || task->needsLetterbox)
+    if (!task->hasVideoSource || !task->videoEncoded || !FFmpegBuilder::outputSizeMatchesSource(*task))
         return;
 
     auto vmafArgs = FFmpegBuilder::buildVmafArgs(*task);

@@ -17,5 +17,6 @@ std::string copyAudioOutputPath(const Task& task);
 std::string commandString(const std::vector<std::string>& args);
 void detectMediaInfo(Task& task);
 int getCpuThreads();
+bool outputSizeMatchesSource(const Task& task);
 
 }
