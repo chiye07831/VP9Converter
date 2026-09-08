@@ -343,7 +343,7 @@ void MainWindow::renderInputSection()
             if (task->frameRate > 0.0)
                 ImGui::Text("Frame   : %.3f fps", task->frameRate);
             else
-                ImGui::Text("Frame   : ?");
+                ImGui::Text("Frame   : -");
             std::string vInfo = task->hasVideoSource
                 ? (task->videoCodec.empty() ? "?" : task->videoCodec) : "-";
             if (task->hasVideoSource && task->videoBitrate > 0)
@@ -354,7 +354,10 @@ void MainWindow::renderInputSection()
             if (task->hasAudioSource && task->audioBitrate > 0)
                 aInfo += "  (" + formatBitrate(task->audioBitrate) + ")";
             ImGui::Text("Audio   : %s", aInfo.c_str());
-            ImGui::Text("Duration: %s", dur);
+            if (task->duration > 0.0)
+                ImGui::Text("Duration: %s", dur);
+            else
+                ImGui::Text("Duration: -");
         }
         else
         {
@@ -386,6 +389,100 @@ void MainWindow::renderVideoSection()
 
         if (task->videoEnabled)
         {
+            ImGui::Checkbox("Keep Original Resolution", &task->keepResolution);
+            if (task->needsPadding)
+                ImGui::Checkbox("add black padding", &task->paddingEnabled);
+
+            static std::map<ImGuiID, double> s_fpsHoverStart;
+            auto showFpsTip = [&](const char* text)
+            {
+                ImGuiID id = ImGui::GetItemID();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                {
+                    double now = ImGui::GetTime();
+                    auto it = s_fpsHoverStart.find(id);
+                    if (it == s_fpsHoverStart.end())
+                        s_fpsHoverStart[id] = now;
+                    else if (now - it->second > 1.0)
+                    {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+                        ImGui::TextUnformatted(text);
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
+                }
+                else
+                {
+                    s_fpsHoverStart.erase(id);
+                }
+            };
+
+            static const char* fpsParamItems[] = {"-vf", "-r"};
+            static const char* fpsParamTips[] = {
+                "-vf fps=\nForce frame rate conversion, changes frame count.",
+                "-r\nChanges PTS timestamps, frame count unchanged, no new frames."
+            };
+            ImGui::SetNextItemWidth(60);
+            if (ImGui::BeginCombo("##fpsParam", fpsParamItems[task->frameRateParam]))
+            {
+                for (int i = 0; i < 2; i++)
+                {
+                    bool selected = (task->frameRateParam == i);
+                    if (ImGui::Selectable(fpsParamItems[i], selected))
+                        task->frameRateParam = i;
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                    showFpsTip(fpsParamTips[i]);
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+
+            static const char* fpsItems[] = {"Source", "60", "59.94 (60000/1001)", "30", "29.97 (30000/1001)", "Custom"};
+            static const char* fpsTips[] = {
+                "Keep original frame rate, no conversion.",
+                "Output 60 fps.",
+                "Output 59.94 fps (60000/1001).",
+                "Output 30 fps.",
+                "Output 29.97 fps (30000/1001).",
+                "Custom frame rate (1-240)."
+            };
+            float maxFpsW = 0.0f;
+            for (int i = 0; i < 6; i++)
+            {
+                float w = ImGui::CalcTextSize(fpsItems[i]).x;
+                if (w > maxFpsW) maxFpsW = w;
+            }
+            ImGui::SetNextItemWidth(maxFpsW + 30.0f);
+            if (ImGui::BeginCombo("##fps", fpsItems[task->frameRatePreset]))
+            {
+                for (int i = 0; i < 6; i++)
+                {
+                    bool selected = (task->frameRatePreset == i);
+                    if (ImGui::Selectable(fpsItems[i], selected))
+                        task->frameRatePreset = i;
+                    if (selected)
+                        ImGui::SetItemDefaultFocus();
+                    showFpsTip(fpsTips[i]);
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SameLine();
+            if (task->frameRatePreset == 5)
+            {
+                ImGui::SetNextItemWidth(70);
+                ImGui::InputDouble("##customFps", &task->customFrameRate, 0.0, 0.0, "%.3f");
+                if (task->customFrameRate < 1.0) task->customFrameRate = 1.0;
+                if (task->customFrameRate > 240.0) task->customFrameRate = 240.0;
+                ImGui::SameLine();
+                ImGui::Text("Frame Rate");
+            }
+            else
+            {
+                ImGui::Text("Frame Rate");
+            }
+
             ImGui::SetNextItemWidth(70);
             ImGui::InputInt("##crf", &task->crf, 0, 0);
             if (task->crf < 0) task->crf = 0;
@@ -394,10 +491,6 @@ void MainWindow::renderVideoSection()
             ImGui::Text("CRF");
             ImGui::SameLine();
             ImGui::TextDisabled("(0-63)");
-
-            ImGui::Checkbox("Keep Original Resolution", &task->keepResolution);
-            if (task->needsPadding)
-                ImGui::Checkbox("add black padding", &task->paddingEnabled);
             if (!task->keepResolution)
             {
                 ImGui::SetNextItemWidth(70);
@@ -579,6 +672,22 @@ void MainWindow::renderQualitySection()
 
 void MainWindow::updateRunningProcesses()
 {
+    for (auto it = m_frameCounters.begin(); it != m_frameCounters.end(); )
+    {
+        it->second->readStderr();
+        if (!it->second->isRunning())
+        {
+            Task* task = m_taskManager.get(it->first);
+            if (task && it->second->getExitCode() == 0)
+                task->totalFrames = std::atoll(it->second->getFullStderr().c_str());
+            it = m_frameCounters.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+
     for (auto it = m_runners.begin(); it != m_runners.end(); )
     {
         it->second->readStderr();
@@ -594,18 +703,7 @@ void MainWindow::updateRunningProcesses()
                 if (exitCode == 0)
                 {
                     if (task->duration <= 0.0)
-                    {
-                        std::string full = it->second->getFullStderr();
-                        size_t dpos = full.find("Duration: ");
-                        if (dpos != std::string::npos)
-                        {
-                            const char* p = full.c_str() + dpos + 10;
-                            int h = 0, m = 0;
-                            double s = 0.0;
-                            if (sscanf(p, "%d:%d:%lf", &h, &m, &s) >= 2)
-                                task->duration = h * 3600.0 + m * 60.0 + s;
-                        }
-                    }
+                        task->duration = ProgressParser::parseDurationLine(it->second->getFullStderr());
 
                     if (task->phase == Task::VideoPhase)
                         task->videoEncoded = true;
@@ -699,10 +797,14 @@ void MainWindow::updateRunningProcesses()
                     task->elapsed = std::chrono::duration<double>(now - st->second).count();
 
                 std::string fullStderr = it->second->getFullStderr();
+                if (task->duration <= 0.0)
+                    task->duration = ProgressParser::parseDurationLine(fullStderr);
                 ProgressInfo info;
                 ProgressParser::parseOutput(fullStderr, info);
                 if (task->duration > 0.0)
                     task->progress = static_cast<float>(info.currentTime / task->duration);
+                else if (task->totalFrames > 0 && info.frame > 0)
+                    task->progress = static_cast<float>(static_cast<double>(info.frame) / task->totalFrames);
                 task->encodeSpeed = info.speed;
             }
             ++it;
@@ -779,10 +881,14 @@ void MainWindow::updateRunningProcesses()
             if (task)
             {
                 std::string fullStderr = it->second->getFullStderr();
+                if (task->duration <= 0.0)
+                    task->duration = ProgressParser::parseDurationLine(fullStderr);
                 ProgressInfo info;
                 ProgressParser::parseOutput(fullStderr, info);
                 if (task->duration > 0.0)
                     task->qualityProgress = static_cast<float>(info.currentTime / task->duration);
+                else if (task->totalFrames > 0 && info.frame > 0)
+                    task->qualityProgress = static_cast<float>(static_cast<double>(info.frame) / task->totalFrames);
                 task->qualitySpeed = info.speed;
             }
             ++it;
@@ -816,6 +922,18 @@ void MainWindow::startEncoding(Task* task, int index)
     task->errorMessage.clear();
     task->videoEncoded = false;
     task->duration = ProgressParser::getDuration(task->inputPath);
+    task->totalFrames = 0;
+    if (task->duration <= 0.0 && task->hasVideoSource)
+    {
+        std::vector<std::string> cfArgs = {
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-count_frames", "-show_entries", "stream=nb_read_frames",
+            "-of", "default=noprint_wrappers=1:nokey=1", task->inputPath
+        };
+        auto cfRunner = std::make_unique<ProcessRunner>();
+        if (cfRunner->start(cfArgs))
+            m_frameCounters[index] = std::move(cfRunner);
+    }
 
     std::vector<std::string> args;
     std::string phaseLabel;

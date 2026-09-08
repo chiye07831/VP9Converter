@@ -18,10 +18,14 @@ struct Task
     int dispWidth = 0;
     int dispHeight = 0;
     double frameRate = 0.0;
+    int frameRatePreset = 0;
+    int frameRateParam = 0;
+    double customFrameRate = 30.0;
     std::string videoCodec;
     std::string audioCodec;
     int64_t videoBitrate = 0;
     int64_t audioBitrate = 0;
+    int64_t totalFrames = 0;
     bool needsPadding = false;
     bool paddingEnabled = true;
     bool videoEncoded = false;

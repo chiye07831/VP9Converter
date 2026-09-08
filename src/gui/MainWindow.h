@@ -51,6 +51,7 @@ private:
 
     std::map<int, std::unique_ptr<ProcessRunner>> m_runners;
     std::map<int, std::unique_ptr<ProcessRunner>> m_qualityRunners;
+    std::map<int, std::unique_ptr<ProcessRunner>> m_frameCounters;
     std::map<int, std::chrono::steady_clock::time_point> m_videoStartTimes;
 
     std::vector<CommandLogEntry> m_commandLog;

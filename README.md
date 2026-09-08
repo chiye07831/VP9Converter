@@ -2,6 +2,8 @@
 
 A lightweight desktop GUI for converting video into Project DIVA-compatible VP9 (.ivf) and OGG audio via FFmpeg, and through WannaCRI create ivf as usm file. 
 
+(The software is developed with AI assistance)
+
 ## Requirements
 
 - FFmpeg + FFprobe in system PATH

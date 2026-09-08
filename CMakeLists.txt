@@ -63,6 +63,7 @@ target_include_directories(VP9Converter PRIVATE src)
 
 if(MSVC)
     target_compile_definitions(VP9Converter PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(VP9Converter PRIVATE /utf-8)
 endif()
 
 if(WIN32)

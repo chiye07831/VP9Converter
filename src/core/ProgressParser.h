@@ -12,6 +12,7 @@ struct ProgressInfo
 namespace ProgressParser {
 
 void parseOutput(const std::string& stderrOutput, ProgressInfo& info);
+double parseDurationLine(const std::string& output);
 double getDuration(const std::string& inputPath);
 
 }

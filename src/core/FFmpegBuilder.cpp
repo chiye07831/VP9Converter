@@ -78,10 +78,34 @@ std::vector<std::string> buildVideoArgs(const Task& task)
     if (task.inputPath.empty() || task.outputFolder.empty() || task.outputName.empty())
         return args;
 
+    std::string fpsValue;
+    if (task.frameRatePreset != 0)
+    {
+        switch (task.frameRatePreset)
+        {
+        case 1: fpsValue = "60"; break;
+        case 2: fpsValue = "60000/1001"; break;
+        case 3: fpsValue = "30"; break;
+        case 4: fpsValue = "30000/1001"; break;
+        case 5:
+        {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.3f", task.customFrameRate);
+            fpsValue = buf;
+            break;
+        }
+        }
+    }
+
     args.push_back("ffmpeg");
     args.push_back("-y");
     args.push_back("-threads");
     args.push_back(std::to_string(getCpuThreads()));
+    if (task.frameRateParam == 1 && !fpsValue.empty())
+    {
+        args.push_back("-r");
+        args.push_back(fpsValue);
+    }
     args.push_back("-i");
     args.push_back(task.inputPath);
 
@@ -144,6 +168,12 @@ std::vector<std::string> buildVideoArgs(const Task& task)
         {
             filters.push_back("scale=" + std::to_string(task.width) + ":" + std::to_string(task.height));
         }
+
+        if (task.frameRatePreset != 0 && task.frameRateParam == 0 && !fpsValue.empty())
+        {
+            filters.push_back("fps=" + fpsValue);
+        }
+
         if (!filters.empty())
         {
             std::string vf;
@@ -377,6 +407,7 @@ static void parseMediaInfo(Task& task, const std::string& output)
 
     bool inStream = false;
     std::string type, codecName, sarStr, rateStr;
+    std::string formatName;
     int w = 0, h = 0;
     int64_t bitrate = 0;
 
@@ -450,8 +481,12 @@ static void parseMediaInfo(Task& task, const std::string& output)
         {
             if (key == "duration")
                 task.duration = std::atof(val.c_str());
+            else if (key == "format_name")
+                formatName = val;
         }
     }
+    if (formatName == task.videoCodec)
+        task.frameRate = 0.0;
 }
 
 void detectMediaInfo(Task& task)
@@ -461,7 +496,7 @@ void detectMediaInfo(Task& task)
     args.push_back("-v");
     args.push_back("error");
     args.push_back("-show_entries");
-    args.push_back("stream=codec_type,codec_name,width,height,sample_aspect_ratio,r_frame_rate,bit_rate:format=duration");
+    args.push_back("stream=codec_type,codec_name,width,height,sample_aspect_ratio,r_frame_rate,bit_rate:format=format_name,duration");
     args.push_back("-of");
     args.push_back("default");
     args.push_back(task.inputPath);

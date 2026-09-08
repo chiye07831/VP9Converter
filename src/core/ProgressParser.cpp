@@ -41,6 +41,21 @@ void parseOutput(const std::string& stderrOutput, ProgressInfo& info)
     }
 }
 
+double parseDurationLine(const std::string& output)
+{
+    size_t dpos = output.find("Duration: ");
+    if (dpos == std::string::npos)
+        return 0.0;
+    const char* p = output.c_str() + dpos + 10;
+    if (strncmp(p, "N/A", 3) == 0)
+        return 0.0;
+    int h = 0, m = 0;
+    double s = 0.0;
+    if (sscanf(p, "%d:%d:%lf", &h, &m, &s) >= 2)
+        return h * 3600.0 + m * 60.0 + s;
+    return 0.0;
+}
+
 #ifdef _WIN32
 
 double getDuration(const std::string& inputPath)
@@ -59,7 +74,27 @@ double getDuration(const std::string& inputPath)
     if (!ProcessRunner::runAndWait(args, output))
         return 0.0;
 
-    return std::atof(output.c_str());
+    double dur = std::atof(output.c_str());
+    if (dur > 0.0)
+        return dur;
+
+    std::vector<std::string> args2;
+    args2.push_back("ffprobe");
+    args2.push_back("-v");
+    args2.push_back("error");
+    args2.push_back("-select_streams");
+    args2.push_back("v:0");
+    args2.push_back("-show_entries");
+    args2.push_back("stream=duration");
+    args2.push_back("-of");
+    args2.push_back("default=noprint_wrappers=1:nokey=1");
+    args2.push_back(inputPath);
+
+    std::string output2;
+    if (!ProcessRunner::runAndWait(args2, output2))
+        return 0.0;
+
+    return std::atof(output2.c_str());
 }
 
 #else
